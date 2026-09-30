@@ -1,0 +1,15 @@
+# /etc/systemd/network/80-can0.network
+# systemd-networkd (the Ubuntu Server 24.04 default backend) configures can0
+# the moment the gs_usb adapter enumerates - at boot or on re-plug.
+[Match]
+Name=can0
+
+[CAN]
+# RV-C
+BitRate=250000
+# Auto-recover from bus-off after 100 ms instead of staying down.
+RestartSec=100ms
+
+[Link]
+# Don't make systemd-networkd-wait-online hang if the adapter is unplugged.
+RequiredForOnline=no

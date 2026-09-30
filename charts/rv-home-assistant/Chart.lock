@@ -1,0 +1,6 @@
+dependencies:
+- name: mosquitto
+  repository: ""
+  version: 0.1.0
+digest: sha256:d9c21a8bb8e3451037e2d6ae2f1d2b42d3d8a6960ae80aa3af4fe4d41da9c056
+generated: "2026-09-29T18:54:07.246357782-05:00"

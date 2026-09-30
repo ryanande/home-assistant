@@ -1,0 +1,32 @@
+apiVersion: v2
+name: rv-home-assistant
+description: >-
+  Umbrella chart for an RV-C (CAN bus) home automation lab on single-node K3s:
+  Eclipse Mosquitto broker, LibreCoach CAN-to-MQTT bridge and Home Assistant Core.
+type: application
+# Bump on every change; chart-releaser only publishes new versions.
+version: 0.1.0
+appVersion: "stable"
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/ryanande/home-assistant
+sources:
+  - https://github.com/ryanande/home-assistant
+keywords:
+  - home-assistant
+  - rv-c
+  - can-bus
+  - socketcan
+  - mqtt
+  - k3s
+maintainers:
+  - name: ryanande
+    url: https://github.com/ryanande
+
+# The Mosquitto chart is vendored in ./charts/mosquitto (embedded subchart), so
+# no external Helm repo is needed at install time. Helm loads it straight from
+# the charts/ directory; `repository` is intentionally left empty.
+dependencies:
+  - name: mosquitto
+    version: 0.1.0
+    repository: ""
+    condition: mosquitto.enabled

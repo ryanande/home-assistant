@@ -1,0 +1,38 @@
+# -----------------------------------------------------------------------------
+# K3s Helm Controller release for rv-home-assistant.
+#
+# Install on the node:
+#   sudo cp gitops/k3s-helm-release.yaml /var/lib/rancher/k3s/server/manifests/rv-home-assistant.yaml
+#
+# K3s watches that directory and applies changes within seconds. The Helm
+# controller cannot clone a git repo, so the chart is served as a Helm repo
+# from GitHub Pages (built by .github/workflows/release-chart.yaml on every
+# push to main that bumps Chart.yaml `version`).
+#
+# Upgrade flow: bump Chart.yaml version -> push -> CI publishes -> update
+# `version` below (or remove it to always track the newest release, which the
+# controller only re-checks when this manifest changes).
+# -----------------------------------------------------------------------------
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  # Becomes the Helm release name -> broker Service "rv-home-assistant-mosquitto".
+  name: rv-home-assistant
+  namespace: kube-system
+spec:
+  repo: https://ryanande.github.io/home-assistant
+  chart: rv-home-assistant
+  version: 0.1.0
+  targetNamespace: rv-lab
+  createNamespace: true
+  # Values here override the chart's values.yaml - keep host-specific
+  # settings (timezone, sizes) here rather than in the chart.
+  valuesContent: |-
+    global:
+      timezone: America/Chicago
+      storageClass: local-path
+    canBus:
+      interfaceName: can0
+      bitrate: 250000
+    homeAssistant:
+      storageSize: 10Gi

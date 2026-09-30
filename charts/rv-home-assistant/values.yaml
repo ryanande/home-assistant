@@ -1,0 +1,146 @@
+# -----------------------------------------------------------------------------
+# rv-home-assistant umbrella chart values
+# -----------------------------------------------------------------------------
+
+global:
+  # IANA timezone injected as TZ into every container.
+  timezone: America/Chicago
+  # Default StorageClass for PVCs. K3s ships "local-path" (hostPath under
+  # /var/lib/rancher/k3s/storage). Empty string = cluster default.
+  storageClass: local-path
+
+# -----------------------------------------------------------------------------
+# Physical CAN bus (host side). The interface itself is configured by the host
+# (see host/ in the repo); these values are passed to the bridge container.
+# -----------------------------------------------------------------------------
+canBus:
+  interfaceName: can0
+  # RV-C is 250 kbit/s. Used by the bridge and, if configureInterface=true,
+  # by the init container that (re)configures the link.
+  bitrate: 250000
+  # If true, an init container runs `ip link set <if> type can bitrate ...`
+  # before the bridge starts. Leave false when the host (systemd-networkd)
+  # already owns the interface - that is the recommended setup.
+  configureInterface: false
+  # Image for that init container; needs full iproute2 (busybox `ip` has no
+  # CAN support).
+  initImage: nicolaka/netshoot:v0.13
+
+# -----------------------------------------------------------------------------
+# LibreCoach CAN <-> MQTT bridge
+# -----------------------------------------------------------------------------
+canBridge:
+  enabled: true
+  image:
+    repository: ghcr.io/backroads4me/can-mqtt-bridge
+    # Pin to a digest or release tag once you have validated one.
+    tag: latest
+    pullPolicy: Always
+
+  # SocketCAN interfaces live in the host network namespace, so the bridge
+  # must share it.
+  hostNetwork: true
+  # Required with hostNetwork so the pod can still resolve *.svc.cluster.local.
+  dnsPolicy: ClusterFirstWithHostNet
+
+  securityContext:
+    privileged: true
+    capabilities:
+      add:
+        - NET_ADMIN
+        - NET_RAW
+
+  # hostPath /dev mount. SocketCAN does not need it (can0 is a netdev, not a
+  # device node) but it is kept for adapters/tools that expect /dev access.
+  hostDev:
+    enabled: true
+    path: /dev
+
+  # Environment passed to the bridge. Key names are the bridge's own config
+  # contract - verify against the LibreCoach docs for your image version.
+  # MQTT_HOST is templated automatically to the in-cluster broker unless
+  # overridden here.
+  mqtt:
+    host: ""          # empty = <release>-mosquitto.<namespace>.svc.cluster.local
+    port: 1883
+    topicPrefix: rvc
+  extraEnv: []
+  #  - name: LOG_LEVEL
+  #    value: debug
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+  nodeSelector: {}
+  tolerations: []
+
+# -----------------------------------------------------------------------------
+# Home Assistant Core
+# -----------------------------------------------------------------------------
+homeAssistant:
+  enabled: true
+  image:
+    repository: ghcr.io/home-assistant/home-assistant
+    # "stable" floats; pin to e.g. "2026.9.3" for reproducible rollouts.
+    tag: stable
+    pullPolicy: IfNotPresent
+
+  # PVC mounted at /config (configuration.yaml, .storage, database).
+  storageSize: 10Gi
+  storageClass: ""          # empty = global.storageClass
+  accessMode: ReadWriteOnce
+  existingClaim: ""         # set to reuse a PVC created outside the chart
+
+  service:
+    # K3s ServiceLB (klipper-lb) binds LoadBalancer ports on the node IP, so
+    # HA is reachable at http://<mini-pc-ip>:8123 without hostNetwork.
+    type: LoadBalancer
+    port: 8123
+    annotations: {}
+
+  # Extra env for the HA container.
+  extraEnv: []
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+
+  probes:
+    enabled: true
+
+  nodeSelector: {}
+  tolerations: []
+
+# -----------------------------------------------------------------------------
+# Mosquitto (embedded subchart: charts/mosquitto). Keys under this block are
+# passed straight to the subchart.
+# -----------------------------------------------------------------------------
+mosquitto:
+  enabled: true
+  image:
+    repository: eclipse-mosquitto
+    # Major-version pin; "latest" also works but can jump majors unannounced.
+    tag: "2"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 1883
+  # Anonymous access is limited to in-cluster clients (ClusterIP only).
+  allowAnonymous: true
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ""        # empty = global.storageClass
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      memory: 128Mi

@@ -1,0 +1,17 @@
+# Defaults for the embedded Mosquitto subchart. Override from the parent chart
+# under the `mosquitto:` key.
+image:
+  repository: eclipse-mosquitto
+  tag: "2"
+  pullPolicy: IfNotPresent
+service:
+  type: ClusterIP
+  port: 1883
+# Mosquitto 2.x only listens on localhost unless a listener is declared, and
+# refuses anonymous clients unless this is true.
+allowAnonymous: true
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClass: ""
+resources: {}

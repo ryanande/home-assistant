@@ -1,0 +1,17 @@
+rv-home-assistant {{ .Chart.Version }} deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Home Assistant:
+  http://<mini-pc-ip>:{{ .Values.homeAssistant.service.port }}
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "rvha.fullname" . }}-home-assistant -f
+
+MQTT broker (in-cluster only):
+  {{ include "rvha.mqttHost" . }}:{{ .Values.mosquitto.service.port }}
+
+  Home Assistant does not auto-discover a broker outside of HA OS. Once, in the UI:
+    Settings -> Devices & Services -> Add Integration -> MQTT
+    Broker: {{ .Release.Name }}-mosquitto   Port: {{ .Values.mosquitto.service.port }}
+  After that, entities published by the bridge via MQTT discovery appear automatically.
+
+CAN bridge ({{ .Values.canBus.interfaceName }} @ {{ int .Values.canBus.bitrate }} bit/s):
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "rvha.fullname" . }}-can-bridge -f
+  Watch raw traffic:  kubectl -n {{ .Release.Namespace }} exec deploy/{{ .Release.Name }}-mosquitto -- mosquitto_sub -t '{{ .Values.canBridge.mqtt.topicPrefix }}/#' -v

@@ -1,0 +1,131 @@
+{{- if .Values.homeAssistant.enabled }}
+{{- $h := .Values.homeAssistant }}
+{{- $name := printf "%s-home-assistant" (include "rvha.fullname" .) }}
+{{- $claim := default $name $h.existingClaim }}
+{{- if not $h.existingClaim }}
+# -----------------------------------------------------------------------------
+# Home Assistant /config volume. helm.sh/resource-policy: keep means an
+# accidental `helm uninstall` does NOT delete your HA configuration/history.
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "rvha.labels" (dict "ctx" $ "component" "home-assistant") | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - {{ $h.accessMode }}
+  {{- $sc := default .Values.global.storageClass $h.storageClass }}
+  {{- if $sc }}
+  storageClassName: {{ $sc }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $h.storageSize }}
+---
+{{- end }}
+# -----------------------------------------------------------------------------
+# Home Assistant Core - isolated pod network (no hostNetwork). It reaches the
+# broker via cluster DNS: <release>-mosquitto:1883.
+# -----------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "rvha.labels" (dict "ctx" $ "component" "home-assistant") | nindent 4 }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  # RWO volume + SQLite DB: never run two HA pods at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "rvha.selectorLabels" (dict "ctx" $ "component" "home-assistant") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "rvha.selectorLabels" (dict "ctx" $ "component" "home-assistant") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: home-assistant
+          image: {{ printf "%s:%s" $h.image.repository $h.image.tag | quote }}
+          imagePullPolicy: {{ $h.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8123
+              protocol: TCP
+          env:
+            - name: TZ
+              value: {{ .Values.global.timezone | quote }}
+            {{- with $h.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: config
+              mountPath: /config
+          {{- if $h.probes.enabled }}
+          # First boot (pip deps, DB migration) can take minutes; the startup
+          # probe gives it up to 10 min before liveness kicks in.
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            failureThreshold: 60
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 30
+            failureThreshold: 5
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+          {{- end }}
+          resources:
+            {{- toYaml $h.resources | nindent 12 }}
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: {{ $claim }}
+      {{- with $h.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $h.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "rvha.labels" (dict "ctx" $ "component" "home-assistant") | nindent 4 }}
+  {{- with $h.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $h.service.type }}
+  selector:
+    {{- include "rvha.selectorLabels" (dict "ctx" $ "component" "home-assistant") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $h.service.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

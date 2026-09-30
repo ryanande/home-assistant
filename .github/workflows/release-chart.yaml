@@ -1,0 +1,40 @@
+# Publishes charts/* as a Helm repo on GitHub Pages
+# (https://ryanande.github.io/home-assistant) whenever a chart version changes.
+name: Release Helm chart
+
+on:
+  push:
+    branches: [main]
+    paths: ["charts/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # create GitHub Releases + push gh-pages index
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: helm lint --strict charts/rv-home-assistant
+      - run: helm template rv-home-assistant charts/rv-home-assistant -n rv-lab > /dev/null
+
+  release:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Configure git
+        run: |
+          git config user.name  "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+      - uses: azure/setup-helm@v4
+      - uses: helm/chart-releaser-action@v1.7.0
+        with:
+          charts_dir: charts
+          skip_existing: true
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
