@@ -11,39 +11,48 @@ gitops/argocd/apps/*.yaml              one Application per app, synced from git
 gitops/k3s-helm-release.yaml           legacy alternative (K3s Helm controller only)
 ```
 
+## Hardware
+
+GMKtec NucBox K8 Plus (Ryzen 7 8845HS, DDR5, 1 TB NVMe, 2× Intel I226-V 2.5 GbE) +
+DSD TECH SH-C31G USB-CAN adapter (candleLight / `gs_usb`). Everything needed is in
+Ubuntu 24.04's stock kernel; no extra drivers.
+
 ## Fresh install
 
-1. **Host CAN setup** (once): `sudo ./host/setup-can0.sh`, then `candump can0`.
-2. **Install Argo CD**:
-   `sudo cp gitops/argocd/argocd-install.yaml /var/lib/rancher/k3s/server/manifests/argocd.yaml`
-   then wait for it: `kubectl -n argocd rollout status deploy/argocd-server`
-3. **Bootstrap the apps** (once): `kubectl apply -f gitops/argocd/root-app.yaml`
-4. **Log in** at `https://<mini-pc-ip>:8443` (self-signed certificate) as `admin`. Password:
-   `kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d`
-   Change it under User Info, then `kubectl -n argocd delete secret argocd-initial-admin-secret`.
-5. **Connect HA to MQTT** (once, in the HA UI): Settings → Devices & Services → Add
-   Integration → MQTT → broker `rv-home-assistant-mosquitto.rv-lab.svc.cluster.local`, port `1883`.
+**1. BIOS** (press `Del` or `Esc` at power-on)
+- **Auto Power On after AC loss: enabled.** The PC comes back by itself whenever coach power is restored.
+- **Power mode: Silent (35 W) or Balanced (54 W).** This stack idles at a few percent CPU; save the battery.
 
-Home Assistant is at `http://<mini-pc-ip>:8123`.
+**2. Ubuntu Server 24.04 LTS** (USB installer from ubuntu.com)
+- Wired Ethernet on either port; give it a DHCP reservation on your router.
+- Storage: *Use an entire disk* with the default LVM layout. The installer only gives `/`
+  100 GiB; the bootstrap script grows it to the whole disk.
+- Tick **Install OpenSSH server**. Skip the featured snaps (no Docker or MicroK8s).
 
-## Switching over from the K3s HelmChart
+**3. Bootstrap** (over SSH, with the CAN adapter plugged in if you have it)
 
-Only needed if `rv-home-assistant` was already installed with `gitops/k3s-helm-release.yaml`.
-Both data volumes survive; the pods are down for a minute or two.
+```bash
+git clone https://github.com/ryanande/home-assistant.git
+cd home-assistant
+sudo ./bootstrap.sh
+```
 
-1. On the node, set `version: 0.2.0` in
-   `/var/lib/rancher/k3s/server/manifests/rv-home-assistant.yaml` and wait for the upgrade
-   (`kubectl -n kube-system get jobs` shows `helm-install-rv-home-assistant` complete).
-   0.2.0 marks the Mosquitto volume as kept on uninstall; the HA volume already was.
-2. Remove the old release. K3s does not delete anything when a manifest file is removed,
-   so both commands are needed:
-   ```
-   sudo rm /var/lib/rancher/k3s/server/manifests/rv-home-assistant.yaml
-   kubectl -n kube-system delete helmchart rv-home-assistant
-   kubectl -n rv-lab get pvc     # both PVCs must still be listed
-   ```
-3. Follow **Fresh install** from step 2. Argo CD uses the same release name, so it
-   recreates the workloads with identical names and picks up the existing volumes.
+It takes about 10 minutes and is safe to re-run. It installs the host CAN config, K3s
+and Argo CD, then Argo CD deploys Mosquitto, the CAN bridge and Home Assistant from
+this repo. At the end it prints the URLs, the Argo CD `admin` password and the CAN
+status. `./bootstrap.sh --help` lists the settings (timezone, K3s version, ...).
+
+**4. Finish in the browser**
+- Home Assistant `http://<mini-pc-ip>:8123`: create your account, then Settings → Devices &
+  Services → Add Integration → MQTT → broker
+  `rv-home-assistant-mosquitto.rv-lab.svc.cluster.local`, port `1883`.
+- Argo CD `https://<mini-pc-ip>:8443` (self-signed certificate): change the `admin`
+  password under User Info, then `kubectl -n argocd delete secret argocd-initial-admin-secret`.
+
+**Troubleshooting**
+- `can0` missing: plug in the adapter, then `sudo networkctl reconfigure can0` and `candump can0`.
+- Ethernet link drops on the I226-V ports are a known issue with Energy Efficient
+  Ethernet; `sudo ethtool --set-eee <iface> eee off` fixes it if you see it.
 
 ## Day-to-day
 
