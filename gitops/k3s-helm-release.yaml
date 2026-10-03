@@ -6,8 +6,9 @@
 #
 # K3s watches that directory and applies changes within seconds. The Helm
 # controller cannot clone a git repo, so the chart is served as a Helm repo
-# from GitHub Pages (built by .github/workflows/release-chart.yaml on every
-# push to main that bumps Chart.yaml `version`).
+# from GitHub Pages at https://ha.buzzuti.com (built by
+# .github/workflows/release-chart.yaml on every push to main that bumps
+# Chart.yaml `version`).
 #
 # Upgrade flow: bump Chart.yaml version -> push -> CI publishes -> update
 # `version` below (or remove it to always track the newest release, which the
@@ -20,7 +21,7 @@ metadata:
   name: rv-home-assistant
   namespace: kube-system
 spec:
-  repo: https://ryanande.github.io/home-assistant
+  repo: https://ha.buzzuti.com
   chart: rv-home-assistant
   version: 0.1.0
   targetNamespace: rv-lab

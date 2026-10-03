@@ -10,7 +10,7 @@ adapter on `can0` (RV-C, 250 kbit/s).
 2. **Enable GitHub Pages**: create an empty `gh-pages` branch, then in repo
    Settings → Pages set the source to `gh-pages` / root.
 3. **Push to `main`** — `.github/workflows/release-chart.yaml` lints and publishes the chart
-   to `https://ryanande.github.io/home-assistant`.
+   to `https://ha.buzzuti.com`.
 4. **Deploy**: `sudo cp gitops/k3s-helm-release.yaml /var/lib/rancher/k3s/server/manifests/rv-home-assistant.yaml`
 5. **Connect HA to MQTT** (once, in the UI): Settings → Devices & Services → Add
    Integration → MQTT → broker `rv-home-assistant-mosquitto.rv-lab.svc.cluster.local`, port `1883`.

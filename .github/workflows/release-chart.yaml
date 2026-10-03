@@ -1,5 +1,5 @@
 # Publishes charts/* as a Helm repo on GitHub Pages
-# (https://ryanande.github.io/home-assistant) whenever a chart version changes.
+# (https://ha.buzzuti.com) whenever a chart version changes.
 name: Release Helm chart
 
 on:
