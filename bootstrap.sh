@@ -140,9 +140,16 @@ install_k3s() {
   if systemctl is-active -q k3s; then
     info "already running: $(k3s --version | head -1)"
   else
+    # Download first (with retries and visible errors) rather than piping
+    # curl into sh, so a network hiccup fails loudly instead of silently.
+    local installer
+    installer=$(mktemp)
+    curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors -o "$installer" https://get.k3s.io \
+      || die "could not download the K3s installer from https://get.k3s.io"
     # INSTALL_K3S_VERSION, when set, takes precedence over the channel.
-    curl -sfL https://get.k3s.io \
-      | INSTALL_K3S_CHANNEL="$K3S_CHANNEL" INSTALL_K3S_VERSION="$K3S_VERSION" sh -s - server
+    INSTALL_K3S_CHANNEL="$K3S_CHANNEL" INSTALL_K3S_VERSION="$K3S_VERSION" sh "$installer" server \
+      || die "the K3s installer failed (exit $?); its output is above"
+    rm -f "$installer"
   fi
   wait_for "the K3s API" kubectl get --raw /readyz
   wait_for "the node to be Ready" kubectl wait --for=condition=Ready node --all --timeout=5s
