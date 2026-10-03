@@ -1,0 +1,71 @@
+{{- if .Values.librecoach.enabled }}
+{{- $l := .Values.librecoach }}
+{{- $name := printf "%s-vehicle-bridge" (include "rvha.fullname" .) }}
+# -----------------------------------------------------------------------------
+# LibreCoach vehicle_bridge: CAN <-> MQTT (can/raw, can/send, can/status) and
+# the optional geo module. Runs LibreCoach's own Python unmodified, started
+# directly instead of through the add-on's s6 init.
+#
+# Host network so it can open SocketCAN on the host's can0; it sets the
+# interface to RV-C's 250 kbit/s itself, hence privileged. One replica only:
+# two readers on one bus would double every frame.
+# -----------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "rvha.labels" (dict "ctx" $ "component" "vehicle-bridge") | nindent 4 }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "rvha.selectorLabels" (dict "ctx" $ "component" "vehicle-bridge") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "rvha.selectorLabels" (dict "ctx" $ "component" "vehicle-bridge") | nindent 8 }}
+      annotations:
+        checksum/options: {{ include "rvha.librecoachOptions" . | sha256sum }}
+    spec:
+      hostNetwork: true
+      # Keeps cluster DNS (core-mosquitto, supervisor) working on the host network.
+      dnsPolicy: ClusterFirstWithHostNet
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 15
+      containers:
+        - name: vehicle-bridge
+          image: {{ include "rvha.librecoachImage" . | quote }}
+          imagePullPolicy: {{ $l.pullPolicy }}
+          command: ["python3", "-u", "/opt/vehicle_bridge/main.py"]
+          workingDir: /opt/vehicle_bridge
+          env:
+            - name: TZ
+              value: {{ .Values.global.timezone | quote }}
+            {{- include "rvha.supervisorTokenEnv" . | nindent 12 }}
+          securityContext:
+            privileged: {{ $l.vehicleBridge.privileged }}
+            allowPrivilegeEscalation: {{ $l.vehicleBridge.privileged }}
+            capabilities:
+              add: ["NET_ADMIN", "NET_RAW"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: options
+              mountPath: /data/options.json
+              subPath: options.json
+              readOnly: true
+          resources:
+            {{- toYaml $l.vehicleBridge.resources | nindent 12 }}
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: options
+          configMap:
+            name: {{ include "rvha.fullname" . }}-librecoach-options
+{{- end }}

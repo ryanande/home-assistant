@@ -2,10 +2,11 @@ apiVersion: v2
 name: rv-home-assistant
 description: >-
   Umbrella chart for an RV-C (CAN bus) home automation lab on single-node K3s:
-  Eclipse Mosquitto broker, LibreCoach CAN-to-MQTT bridge and Home Assistant Core.
+  Eclipse Mosquitto, Home Assistant Core and LibreCoach (vehicle_bridge + Node-RED
+  RV-C decoder) running without the Home Assistant Supervisor.
 type: application
 # Bump on every change; chart-releaser only publishes new versions.
-version: 0.2.0
+version: 0.3.0
 appVersion: "stable"
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/ryanande/home-assistant

@@ -27,9 +27,14 @@ spec:
           storageClass: local-path
         canBus:
           interfaceName: can0
-          bitrate: 250000
         homeAssistant:
           storageSize: 10Gi
+        librecoach:
+          version: "1.7.2"
+          options:
+            victron_enabled: false
+          victron:
+            gxAddress: ""        # Cerbo GX IP, once it has a DHCP reservation
   destination:
     server: https://kubernetes.default.svc
     namespace: rv-lab

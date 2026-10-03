@@ -15,7 +15,9 @@ install -m 0755 "$HERE/wait-for-can.sh"    /usr/local/bin/wait-for-can.sh
 install -d -m 0755 /etc/systemd/system/k3s.service.d
 install -m 0644 "$HERE/k3s-wait-can0.conf" /etc/systemd/system/k3s.service.d/10-wait-can0.conf
 
-modprobe -a can can_raw gs_usb
+for m in can can_raw gs_usb; do
+  modprobe "$m" || echo "WARNING: kernel module $m not available - CAN will not work until it is"
+done
 systemctl enable --now systemd-networkd
 systemctl daemon-reload
 networkctl reload

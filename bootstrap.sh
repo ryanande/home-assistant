@@ -24,6 +24,9 @@
 #   K3S_VERSION    exact K3s version, e.g. v1.34.1+k3s1 (default: latest on channel)
 #   EXTEND_ROOT    grow the root volume: yes|no        (default yes)
 #   WAIT_TIMEOUT   seconds allowed per wait step       (default 900)
+#   GITOPS_REVISION  git branch/tag Argo CD deploys    (default main). Anything
+#                  else skips the root app and applies gitops/argocd/apps/*.yaml
+#                  pinned to that revision - used by CI to test a branch.
 # -----------------------------------------------------------------------------
 set -Eeuo pipefail
 
@@ -34,6 +37,7 @@ K3S_CHANNEL="${K3S_CHANNEL:-stable}"
 K3S_VERSION="${K3S_VERSION:-}"
 EXTEND_ROOT="${EXTEND_ROOT:-yes}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-900}"
+GITOPS_REVISION="${GITOPS_REVISION:-main}"
 
 MANIFESTS=/var/lib/rancher/k3s/server/manifests
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
@@ -168,8 +172,18 @@ install_argocd() {
 }
 
 deploy_apps() {
-  log "Deploying apps from git (Argo CD root app)"
-  kubectl apply -f "$REPO_DIR/gitops/argocd/root-app.yaml"
+  if [[ $GITOPS_REVISION == main ]]; then
+    log "Deploying apps from git (Argo CD root app)"
+    kubectl apply -f "$REPO_DIR/gitops/argocd/root-app.yaml"
+  else
+    # The root app would re-sync the children back to main, so apply them
+    # directly with targetRevision pointed at the branch under test.
+    log "Deploying apps from git revision '$GITOPS_REVISION' (test mode, no root app)"
+    local f
+    for f in "$REPO_DIR"/gitops/argocd/apps/*.yaml; do
+      sed "s|targetRevision: main|targetRevision: $GITOPS_REVISION|" "$f" | kubectl apply -f -
+    done
+  fi
   wait_for "the rv-home-assistant Application" kubectl -n argocd get application/rv-home-assistant
   wait_for "rv-home-assistant to sync from GitHub" app_synced rv-home-assistant
   wait_for "the MQTT broker" \
@@ -177,16 +191,20 @@ deploy_apps() {
   info "Home Assistant's first start pulls a ~1.5 GB image; this can take several minutes"
   wait_for "Home Assistant" \
     kubectl -n rv-lab rollout status deploy/rv-home-assistant-home-assistant --timeout=5s
+  wait_for "LibreCoach Node-RED (installs flow dependencies on first start)" \
+    kubectl -n rv-lab rollout status deploy/rv-home-assistant-node-red --timeout=5s
 }
 
 summary() {
-  local ip pw can bridge
+  local ip pw can bridge canstatus
   ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1)}')
   pw=$(kubectl -n argocd get secret argocd-initial-admin-secret \
         -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null || true)
   can=$(ip -details link show can0 2>/dev/null | grep -oE 'state [A-Z-]+|bitrate [0-9]+' | tr '\n' ' ' || true)
-  bridge=$(kubectl -n rv-lab get pods -l app.kubernetes.io/component=can-bridge --no-headers \
+  bridge=$(kubectl -n rv-lab get pods -l app.kubernetes.io/component=vehicle-bridge --no-headers \
             2>/dev/null | awk '{print $3 " (restarts: " $4 ")"}' || true)
+  canstatus=$(kubectl -n rv-lab exec deploy/rv-home-assistant-mosquitto -- \
+            mosquitto_sub -t can/status -C 1 -W 5 2>/dev/null || true)
 
   log "Done"
   cat <<EOF
@@ -196,14 +214,17 @@ summary() {
                      user: admin   password: ${pw:-<already changed / secret deleted>}
 
     CAN can0         ${can:-not detected - plug in the SH-C31G, then: sudo networkctl reconfigure can0}
-    CAN bridge pod   ${bridge:-not found}
+    vehicle_bridge   ${bridge:-not found}   can/status: ${canstatus:-<none yet>}
 
     Next steps
-      1. Home Assistant: Settings -> Devices & Services -> Add Integration -> MQTT
+      1. Home Assistant: create your account, then Settings -> Devices & Services
+         -> Add Integration -> MQTT
          broker: rv-home-assistant-mosquitto.rv-lab.svc.cluster.local   port: 1883
-      2. Argo CD: change the admin password (User Info), then
+      2. LibreCoach: in Home Assistant, your profile -> Security -> Long-lived
+         access tokens -> Create token, then:  ./scripts/set-ha-token.sh
+      3. Argo CD: change the admin password (User Info), then
          kubectl -n argocd delete secret argocd-initial-admin-secret
-      3. Check raw RV-C traffic:  candump can0
+      4. Check raw RV-C traffic:  candump can0
 EOF
 }
 

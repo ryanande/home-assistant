@@ -1,0 +1,141 @@
+{{- if .Values.librecoach.enabled }}
+{{- $l := .Values.librecoach }}
+{{- $base := include "rvha.fullname" . }}
+# -----------------------------------------------------------------------------
+# LibreCoach add-on environment, recreated for Kubernetes. LibreCoach's code
+# expects the Home Assistant OS Supervisor; these objects stand in for the
+# small part of it LibreCoach actually uses.
+# -----------------------------------------------------------------------------
+
+# The add-on options, as the Supervisor would write them to /data/options.json.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $base }}-librecoach-options
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "rvha.labels" (dict "ctx" $ "component" "librecoach") | nindent 4 }}
+data:
+  options.json: |
+    {{- include "rvha.librecoachOptions" . | nindent 4 }}
+---
+# "core-mosquitto" is the Mosquitto add-on's hostname, hard-coded in
+# vehicle_bridge and the flows. This alias points it at the chart's broker.
+apiVersion: v1
+kind: Service
+metadata:
+  name: core-mosquitto
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "rvha.labels" (dict "ctx" $ "component" "librecoach") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: mosquitto
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: mqtt
+      port: 1883
+      targetPort: mqtt
+      protocol: TCP
+---
+# Supervisor shim. The Supervisor's /core/* endpoints are a proxy to Home
+# Assistant's own API, and that is all LibreCoach calls:
+#   http://supervisor/core/api/...          (flows, Node-RED HA nodes)
+#   ws://supervisor/core/api/websocket      (Node-RED HA nodes)
+#   ws://supervisor/core/websocket          (vehicle_bridge geo module)
+# Everything else the real Supervisor serves returns 404 here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $base }}-supervisor-shim
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "rvha.labels" (dict "ctx" $ "component" "supervisor-shim") | nindent 4 }}
+data:
+  default.conf: |
+    {{- include "rvha.supervisorShimConf" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $base }}-supervisor-shim
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "rvha.labels" (dict "ctx" $ "component" "supervisor-shim") | nindent 4 }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "rvha.selectorLabels" (dict "ctx" $ "component" "supervisor-shim") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "rvha.selectorLabels" (dict "ctx" $ "component" "supervisor-shim") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include "rvha.supervisorShimConf" . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: nginx
+          image: {{ printf "%s:%s" $l.supervisorShim.image.repository $l.supervisorShim.image.tag | quote }}
+          imagePullPolicy: {{ $l.supervisorShim.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml $l.supervisorShim.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $base }}-supervisor-shim
+        - name: tmp
+          emptyDir: {}
+---
+# Must be named exactly "supervisor": LibreCoach uses http://supervisor/...
+apiVersion: v1
+kind: Service
+metadata:
+  name: supervisor
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "rvha.labels" (dict "ctx" $ "component" "supervisor-shim") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "rvha.selectorLabels" (dict "ctx" $ "component" "supervisor-shim") | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+{{- end }}

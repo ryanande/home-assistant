@@ -1,8 +1,8 @@
 # home-assistant — RV-C lab on K3s
 
-Umbrella Helm chart (`charts/rv-home-assistant`) deploying Mosquitto, the LibreCoach
-CAN→MQTT bridge and Home Assistant Core on a single-node K3s host with a SocketCAN
-adapter on `can0` (RV-C, 250 kbit/s). Deployed by Argo CD straight from `main`.
+Umbrella Helm chart (`charts/rv-home-assistant`) deploying Mosquitto, Home Assistant Core
+and [LibreCoach](https://librecoach.com) (RV-C decoding) on a single-node K3s host with a
+SocketCAN adapter on `can0` (RV-C, 250 kbit/s). Deployed by Argo CD straight from `main`.
 
 ```
 gitops/argocd/argocd-install.yaml      K3s HelmChart that installs Argo CD
@@ -46,6 +46,9 @@ status. `./bootstrap.sh --help` lists the settings (timezone, K3s version, ...).
 - Home Assistant `http://<mini-pc-ip>:8123`: create your account, then Settings → Devices &
   Services → Add Integration → MQTT → broker
   `rv-home-assistant-mosquitto.rv-lab.svc.cluster.local`, port `1883`.
+- LibreCoach: in Home Assistant open your profile → Security → Long-lived access tokens →
+  Create token, then on the mini PC run `./scripts/set-ha-token.sh` and paste it. The script
+  stores it in a cluster Secret (never in git), restarts LibreCoach and checks it works.
 - Argo CD `https://<mini-pc-ip>:8443` (self-signed certificate): change the `admin`
   password under User Info, then `kubectl -n argocd delete secret argocd-initial-admin-secret`.
 
@@ -53,6 +56,34 @@ status. `./bootstrap.sh --help` lists the settings (timezone, K3s version, ...).
 - `can0` missing: plug in the adapter, then `sudo networkctl reconfigure can0` and `candump can0`.
 - Ethernet link drops on the I226-V ports are a known issue with Energy Efficient
   Ethernet; `sudo ethtool --set-eee <iface> eee off` fixes it if you see it.
+
+## LibreCoach without the Supervisor
+
+LibreCoach ships as a Home Assistant OS add-on whose installer drives the HA Supervisor.
+This chart runs LibreCoach's own code **unmodified** and supplies the few things it expects
+from the add-on environment instead:
+
+| LibreCoach expects | Provided by |
+|---|---|
+| broker at `core-mosquitto` | a Service alias for the chart's Mosquitto |
+| `http://supervisor/core/...` (REST + websocket) | `supervisor` Service → nginx proxy to Home Assistant's API |
+| `SUPERVISOR_TOKEN` | the `librecoach-ha-token` Secret (`scripts/set-ha-token.sh`) |
+| `/data/options.json` | ConfigMap rendered from `librecoach.options` |
+| retained `librecoach/config/*` toggles | an init container of the Node-RED pod |
+| Node-RED add-on with the flows | Node-RED pod; flows copied from the pinned LibreCoach image |
+
+`vehicle_bridge` (CAN ↔ MQTT) and the Node-RED flows (the RV-C decoder) both come from
+`ghcr.io/backroads4me/amd64-librecoach:<librecoach.version>`, so they always match.
+
+- **Upgrade LibreCoach**: bump `librecoach.version` in `gitops/argocd/apps/rv-home-assistant.yaml`.
+  The CI test (`.github/workflows/test-stack.yaml`) runs on every change; check it before merging.
+- **Node-RED editor**: not exposed. `kubectl -n rv-lab port-forward svc/rv-home-assistant-node-red 1880`,
+  then http://localhost:1880. LibreCoach replaces the flows on every start (edits are backed up to
+  `/config/librecoach-backups`); set `librecoach.nodeRed.preventFlowUpdates: true` to keep edits.
+- **Victron Cerbo GX**: on the GX, Settings → Services → enable MQTT on LAN, and give it a DHCP
+  reservation. Then set `librecoach.options.victron_enabled: true` and
+  `librecoach.victron.gxAddress: <cerbo-ip>` (the flows look for `venus.local`, which pods can't resolve).
+- **Not wired up yet**: Bluetooth devices (Micro-Air, Hughes) need Home Assistant Bluetooth access.
 
 ## Day-to-day
 

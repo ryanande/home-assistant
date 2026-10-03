@@ -10,73 +10,108 @@ global:
   storageClass: local-path
 
 # -----------------------------------------------------------------------------
-# Physical CAN bus (host side). The interface itself is configured by the host
-# (see host/ in the repo); these values are passed to the bridge container.
+# Physical CAN bus. vehicle_bridge (re)configures it at RV-C's 250 kbit/s on
+# start; the host's systemd-networkd config (host/) brings it up at boot.
 # -----------------------------------------------------------------------------
 canBus:
   interfaceName: can0
-  # RV-C is 250 kbit/s. Used by the bridge and, if configureInterface=true,
-  # by the init container that (re)configures the link.
-  bitrate: 250000
-  # If true, an init container runs `ip link set <if> type can bitrate ...`
-  # before the bridge starts. Leave false when the host (systemd-networkd)
-  # already owns the interface - that is the recommended setup.
-  configureInterface: false
-  # Image for that init container; needs full iproute2 (busybox `ip` has no
-  # CAN support).
-  initImage: nicolaka/netshoot:v0.13
 
 # -----------------------------------------------------------------------------
-# LibreCoach CAN <-> MQTT bridge
+# LibreCoach (https://librecoach.com), run without the Home Assistant
+# Supervisor. Its own code runs unmodified; the chart supplies what the
+# add-on environment normally provides:
+#   - "core-mosquitto"     Service alias for the broker (hard-coded upstream)
+#   - "supervisor"         nginx shim proxying /core/* to Home Assistant's API
+#   - SUPERVISOR_TOKEN     a Home Assistant long-lived token from a Secret
+#   - /data/options.json   the add-on options, rendered from `options` below
+#   - retained librecoach/config/* toggles the add-on's run.sh would publish
 # -----------------------------------------------------------------------------
-canBridge:
+librecoach:
   enabled: true
-  image:
-    repository: ghcr.io/backroads4me/can-mqtt-bridge
-    # Pin to a digest or release tag once you have validated one.
-    tag: latest
-    pullPolicy: Always
+  # One version for both vehicle_bridge and the Node-RED flows: both are taken
+  # from ghcr.io/backroads4me/<arch>-librecoach:<version>. Upgrade = bump this.
+  version: "1.7.2"
+  arch: amd64               # amd64 (mini PC) or aarch64
+  pullPolicy: IfNotPresent
 
-  # SocketCAN interfaces live in the host network namespace, so the bridge
-  # must share it.
-  hostNetwork: true
-  # Required with hostNetwork so the pod can still resolve *.svc.cluster.local.
-  dnsPolicy: ClusterFirstWithHostNet
+  # Secret (key "token") holding a Home Assistant long-lived access token,
+  # exposed to LibreCoach as SUPERVISOR_TOKEN. Created after HA onboarding with
+  # scripts/set-ha-token.sh - never committed. Pods start without it; HA API
+  # features (entity export/import, notifications, geo) wait until it exists.
+  haTokenSecret: librecoach-ha-token
 
-  securityContext:
+  # LibreCoach add-on options (same keys as the add-on's Configuration tab).
+  # can_interface is filled in from canBus.interfaceName.
+  options:
+    victron_enabled: false
+    hughes_enabled: false       # Bluetooth: needs HA Bluetooth access (not wired up yet)
+    microair_enabled: false     # Bluetooth: needs HA Bluetooth access (not wired up yet)
+    microair_email: ""
+    microair_password: ""
+    geo_enabled: false
+    geo_device_tracker_primary: ""
+    geo_device_tracker_secondary: ""
+    geo_update_threshold: 10
+    rvc_time_sync_enabled: false
+    debug_logging: false
+    # Upstream's built-in defaults. The broker allows anonymous in-cluster
+    # clients, so these are sent but not checked.
+    mqtt_user: librecoach
+    mqtt_pass: One23four
+
+  victron:
+    # IP of the Cerbo GX (give it a DHCP reservation). The flows connect to
+    # "venus.local", an mDNS name pods cannot resolve, so this is added to the
+    # Node-RED pod's /etc/hosts. Also set options.victron_enabled: true.
+    gxAddress: ""
+
+  vehicleBridge:
+    # Host network: SocketCAN interfaces live in the host's network namespace.
     privileged: true
-    capabilities:
-      add:
-        - NET_ADMIN
-        - NET_RAW
+    resources:
+      requests:
+        cpu: 25m
+        memory: 48Mi
+      limits:
+        memory: 192Mi
 
-  # hostPath /dev mount. SocketCAN does not need it (can0 is a netdev, not a
-  # device node) but it is kept for adapters/tools that expect /dev access.
-  hostDev:
-    enabled: true
-    path: /dev
+  nodeRed:
+    image:
+      repository: nodered/node-red
+      tag: "5.0.7"              # same Node-RED version as the HA Node-RED add-on
+      pullPolicy: IfNotPresent
+    storageSize: 1Gi
+    storageClass: ""            # empty = global.storageClass
+    # LibreCoach owns the flows: on every start they are replaced by the
+    # bundled version (changed files are backed up to /config/librecoach-backups).
+    # Set true to keep your own edits, like the add-on option of the same name.
+    preventFlowUpdates: false
+    service:
+      # ClusterIP: the editor controls your RV, so it is not exposed by default.
+      # Open it with: kubectl -n rv-lab port-forward svc/rv-home-assistant-node-red 1880
+      type: ClusterIP
+      port: 1880
+    resources:
+      requests:
+        cpu: 50m
+        memory: 160Mi
+      limits:
+        memory: 512Mi
 
-  # Environment passed to the bridge. Key names are the bridge's own config
-  # contract - verify against the LibreCoach docs for your image version.
-  # MQTT_HOST is templated automatically to the in-cluster broker unless
-  # overridden here.
-  mqtt:
-    host: ""          # empty = <release>-mosquitto.<namespace>.svc.cluster.local
-    port: 1883
-    topicPrefix: rvc
-  extraEnv: []
-  #  - name: LOG_LEVEL
-  #    value: debug
+  supervisorShim:
+    image:
+      repository: nginxinc/nginx-unprivileged
+      tag: "1.29-alpine"
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 5m
+        memory: 8Mi
+      limits:
+        memory: 64Mi
 
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      memory: 256Mi
-
-  nodeSelector: {}
-  tolerations: []
+  # Used for the retained config-toggle publisher (needs mosquitto_pub).
+  mqttClientImage: eclipse-mosquitto:2
 
 # -----------------------------------------------------------------------------
 # Home Assistant Core

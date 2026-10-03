@@ -1,0 +1,214 @@
+{{- if .Values.librecoach.enabled }}
+{{- $l := .Values.librecoach }}
+{{- $n := $l.nodeRed }}
+{{- $name := printf "%s-node-red" (include "rvha.fullname" .) }}
+# -----------------------------------------------------------------------------
+# Node-RED running the LibreCoach flows - the RV-C decoder. It reads can/raw,
+# decodes it with LibreCoach's DGN table and creates Home Assistant entities
+# through MQTT discovery (homeassistant/<component>/...).
+#
+# Laid out like the Home Assistant Node-RED add-on (userDir /config) because
+# the flows hard-code /config/projects/librecoach-node-red/data/... paths.
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "rvha.labels" (dict "ctx" $ "component" "node-red") | nindent 4 }}
+  annotations:
+    # Holds installed npm modules, flow backups and file-backed context.
+    helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- $sc := default .Values.global.storageClass $n.storageClass }}
+  {{- if $sc }}
+  storageClassName: {{ $sc }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $n.storageSize }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "rvha.labels" (dict "ctx" $ "component" "node-red") | nindent 4 }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "rvha.selectorLabels" (dict "ctx" $ "component" "node-red") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "rvha.selectorLabels" (dict "ctx" $ "component" "node-red") | nindent 8 }}
+      annotations:
+        checksum/options: {{ include "rvha.librecoachOptions" . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      {{- with $l.victron.gxAddress }}
+      # The Victron flows connect to venus.local (mDNS, unresolvable in pods).
+      hostAliases:
+        - ip: {{ . | quote }}
+          hostnames: ["venus.local"]
+      {{- end }}
+      initContainers:
+        # 1. Install the flows, data files and settings from the pinned
+        #    LibreCoach image - what the add-on's init-nodered.sh does.
+        - name: librecoach-flows
+          image: {{ include "rvha.librecoachImage" . | quote }}
+          imagePullPolicy: {{ $l.pullPolicy }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              SRC=/opt/librecoach-project
+              DATA=/config/projects/librecoach-node-red
+              mkdir -p "$DATA/data" /share/.librecoach-preserve
+              cp -r "$SRC/data/." "$DATA/data/"
+              cp "$SRC/LICENSE" "$DATA/LICENSE"
+              if [ "$PREVENT_FLOW_UPDATES" = "true" ] && [ -f /config/flows.json ]; then
+                echo "preventFlowUpdates=true: keeping existing flows.json"
+              else
+                if [ -f /config/flows.json ] && ! cmp -s /config/flows.json "$SRC/artifact/flows.json"; then
+                  BK="/config/librecoach-backups/$(date +%Y%m%d-%H%M%S)"
+                  mkdir -p "$BK" && cp /config/flows.json "$BK/"
+                  echo "flows.json differed from LibreCoach $LIBRECOACH_VERSION; previous copy saved to $BK"
+                fi
+                cp "$SRC/artifact/flows.json" /config/flows.json
+                cp "$SRC/flows_cred.json" /config/flows_cred.json
+              fi
+              cp "$SRC/package.json" /config/package.json
+              cp "$SRC/data/settings.js" /config/settings.js
+              echo "$LIBRECOACH_VERSION" > /config/.librecoach-version
+              chown -R 1000:1000 /config /share
+              echo "LibreCoach $LIBRECOACH_VERSION flows installed"
+          env:
+            - name: LIBRECOACH_VERSION
+              value: {{ $l.version | quote }}
+            - name: PREVENT_FLOW_UPDATES
+              value: {{ $n.preventFlowUpdates | quote }}
+          volumeMounts:
+            - name: data
+              mountPath: /config
+            - name: data
+              mountPath: /share
+              subPath: share
+        # 2. Install the flows' npm dependencies (from LibreCoach's package.json).
+        #    Tolerates no internet - common in an RV - once they are installed.
+        - name: npm-install
+          image: {{ printf "%s:%s" $n.image.repository $n.image.tag | quote }}
+          imagePullPolicy: {{ $n.image.pullPolicy }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              cd /config
+              if npm install --omit=dev --no-audit --no-fund --no-update-notifier --cache /config/.npm; then
+                echo "npm dependencies up to date"
+              elif [ -d node_modules/node-red-contrib-home-assistant-websocket ]; then
+                echo "npm install failed (offline?) - using previously installed modules"
+              else
+                echo "npm install failed and no modules are installed yet" >&2
+                exit 1
+              fi
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+          volumeMounts:
+            - name: data
+              mountPath: /config
+        # 3. Publish the retained librecoach/config/* toggles the flows
+        #    configure themselves from (the add-on's run.sh does this).
+        - name: publish-config
+          image: {{ $l.mqttClientImage | quote }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              until mosquitto_pub -h core-mosquitto -t librecoach/config/ping -n -q 1 2>/dev/null; do
+                echo "waiting for core-mosquitto..."; sleep 3
+              done
+              pub() { mosquitto_pub -h core-mosquitto -r -q 1 -t "librecoach/config/$1" -m "$2"; }
+              pub victron_enabled       {{ $l.options.victron_enabled }}
+              pub beta_enabled          false
+              pub microair_enabled      {{ $l.options.microair_enabled }}
+              pub hughes_enabled        {{ $l.options.hughes_enabled }}
+              pub geo_enabled           {{ $l.options.geo_enabled }}
+              pub rvc_time_sync_enabled {{ $l.options.rvc_time_sync_enabled }}
+              echo "config toggles published"
+      containers:
+        - name: node-red
+          image: {{ printf "%s:%s" $n.image.repository $n.image.tag | quote }}
+          imagePullPolicy: {{ $n.image.pullPolicy }}
+          # The image's entrypoint pins --userDir /data; LibreCoach needs /config.
+          command: ["/usr/local/bin/node", "node_modules/node-red/red.js", "--userDir", "/config"]
+          workingDir: /usr/src/node-red
+          ports:
+            - name: http
+              containerPort: 1880
+              protocol: TCP
+          env:
+            - name: TZ
+              value: {{ .Values.global.timezone | quote }}
+            {{- include "rvha.supervisorTokenEnv" . | nindent 12 }}
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 30
+            failureThreshold: 5
+          volumeMounts:
+            - name: data
+              mountPath: /config
+            - name: data
+              mountPath: /share
+              subPath: share
+          resources:
+            {{- toYaml $n.resources | nindent 12 }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ $name }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "rvha.labels" (dict "ctx" $ "component" "node-red") | nindent 4 }}
+spec:
+  type: {{ $n.service.type }}
+  selector:
+    {{- include "rvha.selectorLabels" (dict "ctx" $ "component" "node-red") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $n.service.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}
