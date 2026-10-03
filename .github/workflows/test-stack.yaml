@@ -1,0 +1,156 @@
+# -----------------------------------------------------------------------------
+# End-to-end test of the whole stack on a fresh Ubuntu 24.04 x86_64 runner -
+# the same OS and CPU type as the mini PC.
+#
+# 1. Runs bootstrap.sh exactly as on the mini PC (K3s, Argo CD, apps), with
+#    Argo CD pointed at the branch under test, then runs it again (idempotency).
+# 2. Checks LibreCoach running without the Supervisor:
+#    - vehicle_bridge reaches the broker via the core-mosquitto alias
+#    - the retained librecoach/config/* toggles were published
+#    - Home Assistant is onboarded, its token stored with set-ha-token.sh, and
+#      the Supervisor shim serves /core/api/ (REST) and the websocket
+#    - the RV-C path: LibreCoach claims an RV-C address on can/send, then a
+#      raw REQUEST_FOR_DGN frame on can/raw is decoded and answered.
+# There is no CAN hardware here, so RV-C frames are injected at the MQTT level.
+# -----------------------------------------------------------------------------
+name: Test stack
+
+on:
+  push:
+    branches: [main, "test/**"]
+    paths:
+      - bootstrap.sh
+      - "host/**"
+      - "gitops/**"
+      - "charts/**"
+      - "scripts/**"
+      - .github/workflows/test-stack.yaml
+  pull_request:
+    paths:
+      - bootstrap.sh
+      - "host/**"
+      - "gitops/**"
+      - "charts/**"
+      - "scripts/**"
+      - .github/workflows/test-stack.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-stack-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NS: rv-lab
+  R: rv-home-assistant
+  KUBECONFIG: /home/runner/.kube/config
+  REVISION: ${{ github.head_ref || github.ref_name }}
+
+jobs:
+  stack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bootstrap.sh (fresh host)
+        run: sudo EXTEND_ROOT=no GITOPS_REVISION="$REVISION" ./bootstrap.sh
+
+      - name: bootstrap.sh again (must be idempotent)
+        run: sudo EXTEND_ROOT=no GITOPS_REVISION="$REVISION" WAIT_TIMEOUT=300 ./bootstrap.sh
+
+      - name: Argo CD synced the branch
+        run: |
+          kubectl -n argocd get application rv-home-assistant \
+            -o jsonpath='{.spec.source.targetRevision} {.status.sync.status} {.status.health.status}{"\n"}'
+          test "$(kubectl -n argocd get application rv-home-assistant -o jsonpath='{.status.sync.status}')" = Synced
+          kubectl -n "$NS" get pods -o wide
+
+      - name: vehicle_bridge and config toggles reach the broker
+        run: |
+          mq() { kubectl -n "$NS" exec "deploy/$R-mosquitto" -- mosquitto_sub -C 1 -W 60 "$@"; }
+          status=$(mq -t can/status);                        echo "can/status = $status"
+          bridge=$(mq -t librecoach/bridge/status);          echo "librecoach/bridge/status = $bridge"
+          victron=$(mq -t librecoach/config/victron_enabled); echo "librecoach/config/victron_enabled = $victron"
+          test "$status" = no_interface   # no CAN adapter on a runner: expected
+          test "$bridge" = online
+          test "$victron" = false
+
+      - name: Onboard Home Assistant and store its token
+        run: |
+          HA="http://$(kubectl -n "$NS" get svc "$R-home-assistant" -o jsonpath='{.spec.clusterIP}'):8123"
+          for i in $(seq 1 60); do curl -fsS "$HA/api/onboarding" >/dev/null 2>&1 && break; sleep 5; done
+          code=$(curl -fsS -X POST "$HA/api/onboarding/users" -H 'Content-Type: application/json' \
+            -d '{"client_id":"http://ci.local/","name":"CI","username":"ci","password":"ci-only-password-1","language":"en"}' \
+            | jq -r .auth_code)
+          token=$(curl -fsS -X POST "$HA/auth/token" -d grant_type=authorization_code \
+            -d "code=$code" -d client_id=http://ci.local/ | jq -r .access_token)
+          test -n "$token" && test "$token" != null
+          echo "::add-mask::$token"
+          HA_TOKEN="$token" ./scripts/set-ha-token.sh
+
+      - name: Node-RED reaches Home Assistant's websocket through the shim
+        run: |
+          for i in $(seq 1 36); do
+            if kubectl -n "$NS" logs "deploy/$R-node-red" -c node-red | grep -q 'Connected to http://supervisor/core'; then
+              kubectl -n "$NS" logs "deploy/$R-node-red" -c node-red | grep 'Connected to http://supervisor/core' | tail -1
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Node-RED never connected to Home Assistant via http://supervisor/core" >&2
+          exit 1
+
+      - name: RV-C - LibreCoach claims an address and answers a decoded request
+        run: |
+          sub() { kubectl -n "$NS" exec "deploy/$R-mosquitto" -- mosquitto_sub -t can/send -W "$1" || true; }
+          claim_re='^18EE[0-9A-F]{4}#[0-9A-F]{16}$'
+
+          # LibreCoach claims an RV-C source address 5 s after Node-RED starts.
+          sub 300 > claim.log &
+          sleep 3
+          kubectl -n "$NS" rollout restart "deploy/$R-node-red"
+          for i in $(seq 1 140); do grep -qE "$claim_re" claim.log && break; sleep 2; done
+          claim=$(grep -E "$claim_re" claim.log | head -1)
+          test -n "$claim" || { echo "no ADDRESS_CLAIMED frame on can/send"; cat claim.log; exit 1; }
+          addr=${claim:6:2}
+          echo "address claim: $claim (source address 0x$addr)"
+          sleep 10   # let the claim's contention window close
+
+          # REQUEST_FOR_DGN (EA00) from a diagnostic tool (F9) to our address,
+          # asking for ADDRESS_CLAIMED (EE00, little-endian 00 EE 00). This goes
+          # through decode_rvc_can + the DGN table + routing + the responder.
+          sub 30 > reply.log &
+          sleep 3
+          kubectl -n "$NS" exec "deploy/$R-mosquitto" -- \
+            mosquitto_pub -t can/raw -m "18EA${addr}F9#00EE00"
+          for i in $(seq 1 25); do grep -qxF "$claim" reply.log && break; sleep 1; done
+          grep -qxF "$claim" reply.log || { echo "request was not answered"; cat reply.log; exit 1; }
+          echo "decoded request answered: $claim"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Stack on \`$REVISION\`"
+            echo '```'
+            kubectl -n argocd get application rv-home-assistant 2>&1 || true
+            echo
+            kubectl -n "$NS" get pods 2>&1 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          set +e
+          kubectl get pods -A -o wide
+          kubectl -n argocd get application rv-home-assistant -o yaml | sed -n '/^status:/,$p' | head -80
+          kubectl -n "$NS" get events --sort-by=.lastTimestamp | tail -40
+          for d in $(kubectl -n "$NS" get deploy -o name); do
+            echo "================ $d"
+            kubectl -n "$NS" logs "$d" --all-containers --prefix --tail=80
+          done
+          sudo journalctl -u k3s --no-pager | tail -60
