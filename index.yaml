@@ -3,6 +3,38 @@ entries:
   rv-home-assistant:
   - apiVersion: v2
     appVersion: stable
+    created: "2026-10-03T10:59:21.386530137Z"
+    dependencies:
+    - condition: mosquitto.enabled
+      name: mosquitto
+      repository: ""
+      version: 0.1.0
+    description: 'Umbrella chart for an RV-C (CAN bus) home automation lab on single-node
+      K3s: Eclipse Mosquitto broker, LibreCoach CAN-to-MQTT bridge and Home Assistant
+      Core.'
+    digest: 2a8c761278b06fdcc3fb4488b899ee78c73b275bc9408498a70131bfa7bba780
+    home: https://github.com/ryanande/home-assistant
+    icon: https://brands.home-assistant.io/homeassistant/icon.png
+    keywords:
+    - home-assistant
+    - rv-c
+    - can-bus
+    - socketcan
+    - mqtt
+    - k3s
+    kubeVersion: '>=1.27.0-0'
+    maintainers:
+    - name: ryanande
+      url: https://github.com/ryanande
+    name: rv-home-assistant
+    sources:
+    - https://github.com/ryanande/home-assistant
+    type: application
+    urls:
+    - https://github.com/ryanande/home-assistant/releases/download/rv-home-assistant-0.2.0/rv-home-assistant-0.2.0.tgz
+    version: 0.2.0
+  - apiVersion: v2
+    appVersion: stable
     created: "2026-09-30T00:18:57.797817638Z"
     dependencies:
     - condition: mosquitto.enabled
@@ -33,4 +65,4 @@ entries:
     urls:
     - https://github.com/ryanande/home-assistant/releases/download/rv-home-assistant-0.1.0/rv-home-assistant-0.1.0.tgz
     version: 0.1.0
-generated: "2026-09-30T00:18:57.797825229Z"
+generated: "2026-10-03T10:59:21.386535646Z"
