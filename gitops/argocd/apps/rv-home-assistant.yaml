@@ -1,0 +1,41 @@
+# -----------------------------------------------------------------------------
+# rv-home-assistant, deployed by Argo CD straight from this repo's main branch.
+# Every push to main that changes charts/rv-home-assistant/ is rolled out
+# within ~2 minutes. No chart version bump or GitHub Pages release needed.
+# -----------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rv-home-assistant
+  namespace: argocd
+  # No resources-finalizer on purpose: if this file is ever removed from git,
+  # Argo orphans the workloads instead of deleting them.
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/ryanande/home-assistant.git
+    targetRevision: main
+    path: charts/rv-home-assistant
+    helm:
+      # Keep the same release name as the K3s HelmChart had, so every resource
+      # name (and the Mosquitto Service DNS name) stays identical.
+      releaseName: rv-home-assistant
+      # Host-specific overrides of charts/rv-home-assistant/values.yaml.
+      valuesObject:
+        global:
+          timezone: America/Chicago
+          storageClass: local-path
+        canBus:
+          interfaceName: can0
+          bitrate: 250000
+        homeAssistant:
+          storageSize: 10Gi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: rv-lab
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

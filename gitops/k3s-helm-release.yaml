@@ -1,6 +1,9 @@
 # -----------------------------------------------------------------------------
 # K3s Helm Controller release for rv-home-assistant.
 #
+# ALTERNATIVE to Argo CD (gitops/argocd/). Use one or the other, never both:
+# two controllers managing the same release fight over every resource.
+#
 # Install on the node:
 #   sudo cp gitops/k3s-helm-release.yaml /var/lib/rancher/k3s/server/manifests/rv-home-assistant.yaml
 #

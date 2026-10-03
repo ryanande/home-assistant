@@ -1,5 +1,6 @@
 {{- if .Values.persistence.enabled }}
-# Retained messages / session state (incl. MQTT discovery configs).
+# Retained messages / session state (incl. MQTT discovery configs). Kept on
+# `helm uninstall` and on Argo CD prune/app deletion.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -7,6 +8,9 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "mosquitto.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Delete=false
 spec:
   accessModes:
     - ReadWriteOnce

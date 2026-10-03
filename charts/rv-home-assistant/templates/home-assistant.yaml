@@ -4,8 +4,9 @@
 {{- $claim := default $name $h.existingClaim }}
 {{- if not $h.existingClaim }}
 # -----------------------------------------------------------------------------
-# Home Assistant /config volume. helm.sh/resource-policy: keep means an
-# accidental `helm uninstall` does NOT delete your HA configuration/history.
+# Home Assistant /config volume. Neither an accidental `helm uninstall`
+# (resource-policy: keep) nor an Argo CD prune/app deletion (Delete=false)
+# removes your HA configuration and history.
 # -----------------------------------------------------------------------------
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -16,6 +17,7 @@ metadata:
     {{- include "rvha.labels" (dict "ctx" $ "component" "home-assistant") | nindent 4 }}
   annotations:
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Delete=false
 spec:
   accessModes:
     - {{ $h.accessMode }}

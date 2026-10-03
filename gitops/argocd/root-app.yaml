@@ -1,0 +1,27 @@
+# -----------------------------------------------------------------------------
+# App-of-apps root. Apply ONCE after Argo CD is running:
+#   kubectl apply -f gitops/argocd/root-app.yaml
+#
+# From then on every Application manifest committed under gitops/argocd/apps/
+# is deployed automatically - adding a new app is just a git push.
+# -----------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  # No resources-finalizer: deleting this Application leaves the child
+  # Applications (and everything they run) in place.
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/ryanande/home-assistant.git
+    targetRevision: main
+    path: gitops/argocd/apps
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

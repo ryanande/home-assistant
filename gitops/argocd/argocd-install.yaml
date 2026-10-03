@@ -1,0 +1,46 @@
+# -----------------------------------------------------------------------------
+# Argo CD, installed by the K3s Helm Controller.
+#
+# Install on the node (once):
+#   sudo cp gitops/argocd/argocd-install.yaml /var/lib/rancher/k3s/server/manifests/argocd.yaml
+#
+# Then bootstrap the apps with gitops/argocd/root-app.yaml (see README).
+# To upgrade Argo CD, bump `version` here and copy the file again.
+# -----------------------------------------------------------------------------
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: argocd
+  namespace: kube-system
+spec:
+  repo: https://argoproj.github.io/argo-helm
+  chart: argo-cd
+  version: 10.9.6          # Argo CD v3.5.3
+  targetNamespace: argocd
+  createNamespace: true
+  valuesContent: |-
+    configs:
+      cm:
+        # Track managed resources by annotation (the 3.x default, pinned
+        # explicitly) so Argo never rewrites the chart's
+        # app.kubernetes.io/instance selector labels.
+        application.resourceTrackingMethod: annotation
+        # How often Argo polls GitHub for new commits.
+        timeout.reconciliation: 120s
+      params:
+        # The server terminates TLS itself with a self-signed certificate.
+        server.insecure: false
+
+    # Single node, single user: no SSO or notification controllers needed.
+    dex:
+      enabled: false
+    notifications:
+      enabled: false
+
+    server:
+      service:
+        # K3s ServiceLB binds these on the node IP. 80/443 are already taken
+        # by Traefik, so the UI lives at https://<mini-pc-ip>:8443
+        type: LoadBalancer
+        servicePortHttp: 8080
+        servicePortHttps: 8443
