@@ -11,7 +11,7 @@ global:
 
 # -----------------------------------------------------------------------------
 # Physical CAN bus. vehicle_bridge (re)configures it at RV-C's 250 kbit/s on
-# start; the host's systemd-networkd config (host/) brings it up at boot.
+# start; the host (notlost-libre repo: udev + can-up@.service) brings it up at boot.
 # -----------------------------------------------------------------------------
 canBus:
   interfaceName: can0

@@ -2,7 +2,8 @@
 # End-to-end test of the whole stack on a fresh Ubuntu 24.04 x86_64 runner -
 # the same OS and CPU type as the mini PC.
 #
-# 1. Runs bootstrap.sh exactly as on the mini PC (K3s, Argo CD, apps), with
+# 1. Installs K3s on the runner (on the mini PC the notlost-libre repo does
+#    that), then runs bootstrap.sh as on the mini PC (Argo CD, apps), with
 #    Argo CD pointed at the branch under test, then runs it again (idempotency).
 # 2. Checks LibreCoach running without the Supervisor:
 #    - vehicle_bridge reaches the broker via the core-mosquitto alias
@@ -20,7 +21,6 @@ on:
     branches: [main, "test/**"]
     paths:
       - bootstrap.sh
-      - "host/**"
       - "gitops/**"
       - "charts/**"
       - "scripts/**"
@@ -28,7 +28,6 @@ on:
   pull_request:
     paths:
       - bootstrap.sh
-      - "host/**"
       - "gitops/**"
       - "charts/**"
       - "scripts/**"
@@ -55,11 +54,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Install K3s (stands in for notlost-libre's host setup)
+        run: |
+          # Download first (with retries and visible errors) rather than piping
+          # curl into sh, so a network hiccup fails loudly.
+          curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors -o "$RUNNER_TEMP/k3s-install.sh" https://get.k3s.io
+          sudo INSTALL_K3S_CHANNEL=stable sh "$RUNNER_TEMP/k3s-install.sh" server
+          sudo systemctl is-active k3s
+          mkdir -p "$(dirname "$KUBECONFIG")"
+          sudo install -m 0600 -o "$(id -u)" -g "$(id -g)" /etc/rancher/k3s/k3s.yaml "$KUBECONFIG"
+          kubectl wait --for=condition=Ready node --all --timeout=300s
+
       - name: bootstrap.sh (fresh host)
-        run: sudo EXTEND_ROOT=no GITOPS_REVISION="$REVISION" ./bootstrap.sh
+        run: sudo GITOPS_REVISION="$REVISION" ./bootstrap.sh
 
       - name: bootstrap.sh again (must be idempotent)
-        run: sudo EXTEND_ROOT=no GITOPS_REVISION="$REVISION" WAIT_TIMEOUT=300 ./bootstrap.sh
+        run: sudo GITOPS_REVISION="$REVISION" WAIT_TIMEOUT=300 ./bootstrap.sh
 
       - name: Argo CD synced the branch
         run: |

@@ -1,28 +1,25 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# bootstrap.sh - fresh install of the RV-C Home Assistant lab on a new mini PC.
+# bootstrap.sh - deploy the RV-C Home Assistant stack onto the mini PC's K3s.
 #
-# Run on a freshly installed Ubuntu Server 24.04 LTS, from a clone of this repo:
+# Run on the mini PC AFTER the host has been set up by notlost-libre
+# (node-provisioning/setup_node.sh: BIOS notes, OS tuning, CAN adapter, K3s),
+# from a clone of this repo:
 #   git clone https://github.com/ryanande/home-assistant.git
 #   cd home-assistant && sudo ./bootstrap.sh
 #
 # What it does, in order:
-#   1. preflight checks (root, x86_64, Ubuntu 24.04, internet)
-#   2. base packages, host timezone, inotify limits
-#   3. grows the LVM root volume into the unused disk (Ubuntu only uses 100 GiB)
-#   4. opens firewall ports if ufw is active
-#   5. host CAN setup (host/setup-can0.sh) - fine if the adapter isn't plugged in
-#   6. installs K3s and gives your login user kubectl access
-#   7. installs Argo CD and applies the root app, which deploys everything else
-#   8. waits for Home Assistant and prints URLs, the Argo CD password and status
+#   1. preflight checks (root, x86_64, repo files, internet) and that the host
+#      is ready: k3s active and the node Ready (warns if can0 is absent)
+#   2. installs Argo CD and applies the root app, which deploys everything else
+#   3. waits for Home Assistant and prints URLs, the Argo CD password and status
+#
+# It does not touch the host itself (timezone, sysctls, disk, firewall, CAN,
+# K3s) - that all belongs to notlost-libre.
 #
 # Safe to re-run: every step checks before it changes anything.
 #
-# Settings (environment variables, e.g. `sudo HOST_TIMEZONE=America/Denver ./bootstrap.sh`):
-#   HOST_TIMEZONE  host clock timezone                 (default America/Chicago)
-#   K3S_CHANNEL    K3s release channel                 (default stable)
-#   K3S_VERSION    exact K3s version, e.g. v1.34.1+k3s1 (default: latest on channel)
-#   EXTEND_ROOT    grow the root volume: yes|no        (default yes)
+# Settings (environment variables, e.g. `sudo WAIT_TIMEOUT=1800 ./bootstrap.sh`):
 #   WAIT_TIMEOUT   seconds allowed per wait step       (default 900)
 #   GITOPS_REVISION  git branch/tag Argo CD deploys    (default main). Anything
 #                  else skips the root app and applies gitops/argocd/apps/*.yaml
@@ -32,10 +29,6 @@ set -Eeuo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-HOST_TIMEZONE="${HOST_TIMEZONE:-America/Chicago}"
-K3S_CHANNEL="${K3S_CHANNEL:-stable}"
-K3S_VERSION="${K3S_VERSION:-}"
-EXTEND_ROOT="${EXTEND_ROOT:-yes}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-900}"
 GITOPS_REVISION="${GITOPS_REVISION:-main}"
 
@@ -64,6 +57,16 @@ app_synced() {
   [[ $(kubectl -n argocd get application "$1" -o jsonpath='{.status.sync.status}') == Synced ]]
 }
 
+# The host (k3s, CAN) is set up by notlost-libre, not by this repo.
+host_ready() {
+  local hint="set the host up first: notlost-libre/node-provisioning/setup_node.sh"
+  systemctl is-active -q k3s || die "k3s is not active; $hint"
+  kubectl wait --for=condition=Ready node --all --timeout=60s >/dev/null 2>&1 \
+    || die "the K3s node is not Ready (kubectl get node); $hint"
+  ip link show can0 >/dev/null 2>&1 \
+    || warn "can0 not found - plug in the SH-C31G; the CAN bridge stays idle until then (host CAN setup: notlost-libre)"
+}
+
 preflight() {
   log "Preflight checks"
   [[ $EUID -eq 0 ]] || die "run with sudo: sudo ./bootstrap.sh"
@@ -74,97 +77,13 @@ preflight() {
     warn "built for Ubuntu 24.04, found ${PRETTY_NAME:-unknown}; continuing"
   fi
   local f
-  for f in host/setup-can0.sh gitops/argocd/argocd-install.yaml gitops/argocd/root-app.yaml; do
+  for f in gitops/argocd/argocd-install.yaml gitops/argocd/root-app.yaml; do
     [[ -f $REPO_DIR/$f ]] || die "missing $f - run this from a clone of the repo"
   done
-  curl -fsS --max-time 15 -o /dev/null https://get.k3s.io \
-    || die "no internet access (https://get.k3s.io unreachable)"
+  curl -fsS --max-time 15 -o /dev/null https://github.com \
+    || die "no internet access (https://github.com unreachable; Argo CD syncs from it)"
+  host_ready
   info "$(nproc) CPU threads, $(awk '/MemTotal/{printf "%.0f", $2/1048576}' /proc/meminfo) GiB RAM"
-}
-
-base_system() {
-  log "Base packages and host settings"
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
-  apt-get install -y -qq curl git jq >/dev/null
-  timedatectl set-timezone "$HOST_TIMEZONE"
-  info "timezone: $HOST_TIMEZONE"
-  # K3s, Argo CD and Home Assistant together exceed Ubuntu's default of 128
-  # inotify instances, which shows up as "too many open files" in pod logs.
-  cat > /etc/sysctl.d/90-rv-lab.conf <<'EOF'
-fs.inotify.max_user_instances = 1024
-fs.inotify.max_user_watches = 524288
-EOF
-  sysctl -q --system
-}
-
-extend_root() {
-  [[ $EXTEND_ROOT == yes ]] || return 0
-  local src vg free_g
-  src=$(findmnt -no SOURCE /)
-  if ! lvs "$src" >/dev/null 2>&1; then
-    info "root filesystem is not on LVM; nothing to grow"
-    return 0
-  fi
-  vg=$(lvs --noheadings -o vg_name "$src" | tr -d ' ')
-  free_g=$(vgs --noheadings --units g --nosuffix -o vg_free "$vg" | tr -d ' ')
-  free_g=${free_g%.*}
-  if (( ${free_g:-0} >= 5 )); then
-    log "Growing the root volume into ${free_g} GiB of unused disk"
-    info "Ubuntu's installer caps / at 100 GiB; K3s volumes (HA config, database) live on /"
-    lvextend -q -r -l +100%FREE "$src"
-  fi
-  info "/ is now $(df -h --output=size / | tail -1 | tr -d ' ')"
-}
-
-firewall() {
-  if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then
-    log "ufw is active - opening ports"
-    ufw allow 22/tcp comment 'SSH' >/dev/null
-    ufw allow 8123/tcp comment 'Home Assistant' >/dev/null
-    ufw allow 8443/tcp comment 'Argo CD' >/dev/null
-    ufw allow from 10.42.0.0/16 comment 'K3s pods' >/dev/null
-    ufw allow from 10.43.0.0/16 comment 'K3s services' >/dev/null
-  fi
-}
-
-can_interface() {
-  log "CAN interface"
-  # Installs the networkd config and the k3s.service drop-in BEFORE K3s
-  # exists, so K3s starts after can0 from its very first boot.
-  "$REPO_DIR/host/setup-can0.sh"
-}
-
-install_k3s() {
-  log "K3s"
-  if systemctl is-active -q k3s; then
-    info "already running: $(k3s --version | head -1)"
-  else
-    # Download first (with retries and visible errors) rather than piping
-    # curl into sh, so a network hiccup fails loudly instead of silently.
-    local installer
-    installer=$(mktemp)
-    curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors -o "$installer" https://get.k3s.io \
-      || die "could not download the K3s installer from https://get.k3s.io"
-    # INSTALL_K3S_VERSION, when set, takes precedence over the channel.
-    INSTALL_K3S_CHANNEL="$K3S_CHANNEL" INSTALL_K3S_VERSION="$K3S_VERSION" sh "$installer" server \
-      || die "the K3s installer failed (exit $?); its output is above"
-    rm -f "$installer"
-  fi
-  wait_for "the K3s API" kubectl get --raw /readyz
-  wait_for "the node to be Ready" kubectl wait --for=condition=Ready node --all --timeout=5s
-
-  # Let the login user run kubectl without sudo.
-  if [[ -n ${SUDO_USER:-} && $SUDO_USER != root ]]; then
-    local home group
-    home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
-    group=$(id -gn "$SUDO_USER")
-    install -d -m 0700 -o "$SUDO_USER" -g "$group" "$home/.kube"
-    install -m 0600 -o "$SUDO_USER" -g "$group" /etc/rancher/k3s/k3s.yaml "$home/.kube/config"
-    grep -qs 'KUBECONFIG=' "$home/.bashrc" \
-      || echo 'export KUBECONFIG=$HOME/.kube/config' >> "$home/.bashrc"
-    info "kubectl configured for $SUDO_USER (open a new shell to pick it up)"
-  fi
 }
 
 install_argocd() {
@@ -220,7 +139,7 @@ summary() {
     Argo CD          https://${ip:-<this-ip>}:8443    (self-signed certificate)
                      user: admin   password: ${pw:-<already changed / secret deleted>}
 
-    CAN can0         ${can:-not detected - plug in the SH-C31G, then: sudo networkctl reconfigure can0}
+    CAN can0         ${can:-not detected - plug in the SH-C31G (host CAN setup lives in notlost-libre)}
     vehicle_bridge   ${bridge:-not found}   can/status: ${canstatus:-<none yet>}
 
     Next steps
@@ -241,11 +160,6 @@ main() {
     exit 0
   fi
   preflight
-  base_system
-  extend_root
-  firewall
-  can_interface
-  install_k3s
   install_argocd
   deploy_apps
   summary
