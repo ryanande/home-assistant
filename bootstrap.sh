@@ -98,6 +98,27 @@ EOF
   sysctl -q --system
 }
 
+apparmor_mosquitto() {
+  # Ubuntu 26.04's apparmor package ships a profile attached to
+  # /usr/sbin/mosquitto. The eclipse-mosquitto image has its binary at the same
+  # path, so the host profile confines the container and denies reads of
+  # /mosquitto/config/mosquitto.conf; the broker then exits at startup.
+  # Keep the profile and allow only the container's own paths.
+  local profile=/etc/apparmor.d/mosquitto local_rules=/etc/apparmor.d/local/mosquitto
+  [[ -f $profile ]] || return 0
+  log "Allowing the mosquitto container's paths in its host AppArmor profile"
+  mkdir -p "$(dirname "$local_rules")"
+  cat > "$local_rules" <<'EOF2'
+# Managed by bootstrap.sh: eclipse-mosquitto container paths.
+/mosquitto/** r,
+/mosquitto/data/** rwk,
+/mosquitto/log/** rw,
+EOF2
+  if command -v apparmor_parser >/dev/null; then
+    apparmor_parser -r "$profile"
+  fi
+}
+
 extend_root() {
   [[ $EXTEND_ROOT == yes ]] || return 0
   local src vg free_g
@@ -242,6 +263,7 @@ main() {
   fi
   preflight
   base_system
+  apparmor_mosquitto
   extend_root
   firewall
   can_interface
