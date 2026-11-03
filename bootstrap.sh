@@ -9,13 +9,15 @@
 #   cd home-assistant && sudo ./bootstrap.sh
 #
 # What it does, in order:
-#   1. preflight checks (root, x86_64, repo files, internet) and that the host
-#      is ready: k3s active and the node Ready (warns if can0 is absent)
+#   1. preflight checks (root, x86_64, repo files, GitHub and image registries)
+#      and that the host is ready: k3s active and the node Ready (warns if
+#      can0 is absent or the inotify limits are low); copies the kubeconfig
+#      to the sudo user so kubectl works without sudo
 #   2. installs Argo CD and applies the root app, which deploys everything else
 #   3. waits for Home Assistant and prints URLs, the Argo CD password and status
 #
 # It does not touch the host itself (timezone, sysctls, disk, firewall, CAN,
-# K3s) - that all belongs to notlost-libre.
+# K3s) - that all belongs to notlost-libre (its K3s is v1.36.5).
 #
 # Safe to re-run: every step checks before it changes anything.
 #
@@ -60,11 +62,36 @@ app_synced() {
 # The host (k3s, CAN) is set up by notlost-libre, not by this repo.
 host_ready() {
   local hint="set the host up first: notlost-libre/node-provisioning/setup_node.sh"
+  command -v kubectl >/dev/null || die "kubectl not found; $hint"
   systemctl is-active -q k3s || die "k3s is not active; $hint"
-  kubectl wait --for=condition=Ready node --all --timeout=60s >/dev/null 2>&1 \
-    || die "the K3s node is not Ready (kubectl get node); $hint"
+  [[ -r $KUBECONFIG ]] || die "cannot read $KUBECONFIG; $hint"
+  # Right after a reboot or setup_node.sh, k3s can be active before the API is up.
+  local deadline=$((SECONDS + WAIT_TIMEOUT)) out
+  info "waiting for the K3s API and a Ready node ..."
+  until out=$(kubectl wait --for=condition=Ready node --all --timeout=5s 2>&1); do
+    (( SECONDS < deadline )) || die "the K3s node is not Ready after ${WAIT_TIMEOUT}s: ${out:-no output}; $hint"
+    sleep 5
+  done
+  # K3s, Argo CD and Home Assistant together exceed the Ubuntu default of 128
+  # inotify instances ("too many open files" in pod logs); the host sets 1024.
+  (( $(sysctl -n fs.inotify.max_user_instances) >= 512 )) \
+    || warn "fs.inotify.max_user_instances is low; pods may log 'too many open files' ($hint)"
   ip link show can0 >/dev/null 2>&1 \
     || warn "can0 not found - plug in the SH-C31G; the CAN bridge stays idle until then (host CAN setup: notlost-libre)"
+}
+
+# Give the login user kubectl access (scripts/set-ha-token.sh and the README use it).
+kubeconfig_for_user() {
+  [[ -n ${SUDO_USER:-} && $SUDO_USER != root ]] || return 0
+  local home group
+  home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+  group=$(id -gn "$SUDO_USER")
+  install -d -m 0700 -o "$SUDO_USER" -g "$group" "$home/.kube"
+  install -m 0600 -o "$SUDO_USER" -g "$group" "$KUBECONFIG" "$home/.kube/config"
+  # shellcheck disable=SC2016 # $HOME must expand in the user's shell, not here
+  grep -qs 'KUBECONFIG=' "$home/.bashrc" \
+    || echo 'export KUBECONFIG=$HOME/.kube/config' >> "$home/.bashrc"
+  info "kubectl configured for $SUDO_USER (open a new shell to pick it up)"
 }
 
 preflight() {
@@ -80,9 +107,14 @@ preflight() {
   for f in gitops/argocd/argocd-install.yaml gitops/argocd/root-app.yaml; do
     [[ -f $REPO_DIR/$f ]] || die "missing $f - run this from a clone of the repo"
   done
-  curl -fsS --max-time 15 -o /dev/null https://github.com \
-    || die "no internet access (https://github.com unreachable; Argo CD syncs from it)"
+  # Argo CD syncs from GitHub; the images come from ghcr.io and Docker Hub.
+  # Any HTTP answer (even 401) proves reachability, so no -f here.
+  local u
+  for u in https://github.com https://ghcr.io/v2/ https://registry-1.docker.io/v2/; do
+    curl -sS --max-time 15 -o /dev/null "$u" || die "no internet access ($u unreachable)"
+  done
   host_ready
+  kubeconfig_for_user
   info "$(nproc) CPU threads, $(awk '/MemTotal/{printf "%.0f", $2/1048576}' /proc/meminfo) GiB RAM"
 }
 

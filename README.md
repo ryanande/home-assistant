@@ -6,7 +6,8 @@ SocketCAN adapter on `can0` (RV-C, 250 kbit/s). Deployed by Argo CD straight fro
 
 This repo is **only the application stack**. The computer itself (BIOS, OS tuning, power,
 networking, the CAN adapter plumbing, K3s, clean shutdown from the Victron Cerbo) is set up by
-the `notlost-libre` repo (`node-provisioning/`).
+the [`notlost-libre`](https://github.com/ryanande/notlost-libre) repo (`node-provisioning/`;
+the `node-tuning` work, K3s v1.36.5).
 
 ```
 gitops/argocd/argocd-install.yaml      K3s HelmChart that installs Argo CD
@@ -42,7 +43,8 @@ sudo ./bootstrap.sh
 It refuses to run unless K3s is active and the node is Ready (and warns if `can0` is missing).
 It installs Argo CD, then Argo CD deploys Mosquitto, the CAN bridge and Home Assistant from
 this repo. About 10 minutes, safe to re-run. At the end it prints the URLs, the Argo CD `admin`
-password and the CAN status. `./bootstrap.sh --help` lists the settings.
+password and the CAN status. It also copies the kubeconfig to your login user so
+`kubectl` and `scripts/set-ha-token.sh` work without sudo. `./bootstrap.sh --help` lists the settings.
 Opening the apps to your network (firewall/NAT) is not done by the script.
 
 **4. Finish in the browser**

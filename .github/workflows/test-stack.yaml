@@ -45,6 +45,7 @@ env:
   NS: rv-lab
   R: rv-home-assistant
   KUBECONFIG: /home/runner/.kube/config
+  K3S_VERSION: v1.36.5+k3s1
   REVISION: ${{ github.head_ref || github.ref_name }}
 
 jobs:
@@ -59,8 +60,9 @@ jobs:
           # Download first (with retries and visible errors) rather than piping
           # curl into sh, so a network hiccup fails loudly.
           curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors -o "$RUNNER_TEMP/k3s-install.sh" https://get.k3s.io
-          # Pinned to the version adopted on the mini PC; also avoids the update.k3s.io channel lookup.
-          sudo INSTALL_K3S_VERSION=v1.36.5+k3s1 sh "$RUNNER_TEMP/k3s-install.sh" server
+          # Keep in step with the K3s notlost-libre adopts on the mini PC (v1.36.5);
+          # pinning also avoids the update.k3s.io channel lookup.
+          sudo INSTALL_K3S_VERSION="$K3S_VERSION" sh "$RUNNER_TEMP/k3s-install.sh" server
           sudo systemctl is-active k3s
           mkdir -p "$(dirname "$KUBECONFIG")"
           sudo install -m 0600 -o "$(id -u)" -g "$(id -g)" /etc/rancher/k3s/k3s.yaml "$KUBECONFIG"
