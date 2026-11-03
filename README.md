@@ -23,7 +23,7 @@ Ubuntu 24.04's stock kernel; no extra drivers.
 - **Auto Power On after AC loss: enabled.** The PC comes back by itself whenever coach power is restored.
 - **Power mode: Silent (35 W) or Balanced (54 W).** This stack idles at a few percent CPU; save the battery.
 
-**2. Ubuntu Server 24.04 LTS** (USB installer from ubuntu.com)
+**2. Ubuntu Server 24.04 or 26.04 LTS** (USB installer from ubuntu.com)
 - Wired Ethernet on either port; give it a DHCP reservation on your router.
 - Storage: *Use an entire disk* with the default LVM layout. The installer only gives `/`
   100 GiB; the bootstrap script grows it to the whole disk.

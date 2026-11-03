@@ -2,12 +2,12 @@
 # -----------------------------------------------------------------------------
 # bootstrap.sh - fresh install of the RV-C Home Assistant lab on a new mini PC.
 #
-# Run on a freshly installed Ubuntu Server 24.04 LTS, from a clone of this repo:
+# Run on a freshly installed Ubuntu Server 24.04 or 26.04 LTS, from a clone of this repo:
 #   git clone https://github.com/ryanande/home-assistant.git
 #   cd home-assistant && sudo ./bootstrap.sh
 #
 # What it does, in order:
-#   1. preflight checks (root, x86_64, Ubuntu 24.04, internet)
+#   1. preflight checks (root, x86_64, Ubuntu 24.04 or 26.04, internet)
 #   2. base packages, host timezone, inotify limits
 #   3. grows the LVM root volume into the unused disk (Ubuntu only uses 100 GiB)
 #   4. opens firewall ports if ufw is active
@@ -70,8 +70,8 @@ preflight() {
   [[ $(uname -m) == x86_64 ]] || die "expected an x86_64 host, found $(uname -m)"
   # shellcheck source=/dev/null
   . /etc/os-release
-  if [[ ${ID:-} != ubuntu || ${VERSION_ID:-} != 24.04 ]]; then
-    warn "built for Ubuntu 24.04, found ${PRETTY_NAME:-unknown}; continuing"
+  if [[ ${ID:-} != ubuntu || ( ${VERSION_ID:-} != 24.04 && ${VERSION_ID:-} != 26.04 ) ]]; then
+    warn "built for Ubuntu 24.04 and 26.04, found ${PRETTY_NAME:-unknown}; continuing"
   fi
   local f
   for f in host/setup-can0.sh gitops/argocd/argocd-install.yaml gitops/argocd/root-app.yaml; do
