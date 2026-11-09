@@ -190,6 +190,13 @@ install_k3s() {
 
 install_argocd() {
   log "Argo CD"
+  # Another stack (or an earlier run) may already own Argo CD. Never rewrite or
+  # upgrade it; just wait until it is healthy.
+  if kubectl get crd applications.argoproj.io >/dev/null 2>&1; then
+    info "Argo CD already installed (Application CRD exists); leaving it as is"
+    kubectl -n argocd rollout status deploy/argocd-server --timeout="${WAIT_TIMEOUT}s"
+    return
+  fi
   install -m 0644 "$REPO_DIR/gitops/argocd/argocd-install.yaml" "$MANIFESTS/argocd.yaml"
   wait_for "the Argo CD CRDs" \
     kubectl wait --for=condition=Established crd/applications.argoproj.io --timeout=5s

@@ -92,6 +92,11 @@ from the add-on environment instead:
   manual changes made with `kubectl` are reverted (self-heal).
 - **Add an app**: commit a new Application manifest under `gitops/argocd/apps/`.
 - **Upgrade Argo CD**: bump `version` in `gitops/argocd/argocd-install.yaml`, copy it to the node again.
+  `bootstrap.sh` skips the Argo CD install when the Application CRD already exists, so it never
+  overwrites an Argo CD installed by something else.
+- **Root app renamed** (`root` -> `rv-home-assistant-root`): on a cluster bootstrapped earlier, run
+  `kubectl apply -f gitops/argocd/root-app.yaml`, then
+  `kubectl -n argocd delete application root --cascade=orphan` (the children keep running).
 
 `.github/workflows/release-chart.yaml` still lints every chart change and publishes chart
 releases to `https://ha.buzzuti.com` for the legacy path; Argo CD does not need them.
