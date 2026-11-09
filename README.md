@@ -94,7 +94,7 @@ from the add-on environment instead:
 - **Upgrade Argo CD**: bump `version` in `gitops/argocd/argocd-install.yaml`, copy it to the node again.
   `bootstrap.sh` skips the Argo CD install when the Application CRD already exists, so it never
   overwrites an Argo CD installed by something else.
-- **Root app renamed** (`root` -> `rv-home-assistant-root`): on a cluster bootstrapped earlier, run
+- **Root app renamed** (`root` -> `rv-home-assistant-root`): re-running `bootstrap.sh` migrates it automatically. To do it by hand, run
   `kubectl apply -f gitops/argocd/root-app.yaml`, then
   `kubectl -n argocd delete application root --cascade=orphan` (the children keep running).
 

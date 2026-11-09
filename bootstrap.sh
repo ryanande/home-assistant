@@ -194,22 +194,36 @@ install_argocd() {
   # upgrade it; just wait until it is healthy.
   if kubectl get crd applications.argoproj.io >/dev/null 2>&1; then
     info "Argo CD already installed (Application CRD exists); leaving it as is"
-    kubectl -n argocd rollout status deploy/argocd-server --timeout="${WAIT_TIMEOUT}s"
-    return
+  else
+    install -m 0644 "$REPO_DIR/gitops/argocd/argocd-install.yaml" "$MANIFESTS/argocd.yaml"
+    wait_for "the Argo CD CRDs" \
+      kubectl wait --for=condition=Established crd/applications.argoproj.io --timeout=5s
   fi
-  install -m 0644 "$REPO_DIR/gitops/argocd/argocd-install.yaml" "$MANIFESTS/argocd.yaml"
-  wait_for "the Argo CD CRDs" \
-    kubectl wait --for=condition=Established crd/applications.argoproj.io --timeout=5s
-  wait_for "the Argo CD deployments to be created" kubectl -n argocd get deploy/argocd-server
+  # Also covers a re-run after an interrupted install (CRD up, deployments not yet).
+  # A timeout here usually means Argo CD lives outside namespace "argocd".
+  wait_for "the Argo CD deployments to be created in namespace argocd" \
+    kubectl -n argocd get deploy/argocd-server
   kubectl -n argocd rollout status deploy/argocd-server --timeout="${WAIT_TIMEOUT}s"
   kubectl -n argocd rollout status deploy/argocd-repo-server --timeout="${WAIT_TIMEOUT}s"
   kubectl -n argocd rollout status statefulset/argocd-application-controller --timeout="${WAIT_TIMEOUT}s"
+}
+
+# Before the root app was renamed to rv-home-assistant-root it was called "root".
+# Left in place, both would reconcile the same children, so retire the old one
+# (orphaning, so the children keep running) - but only if it is this repo's.
+retire_old_root() {
+  local url
+  url=$(kubectl -n argocd get application root -o jsonpath='{.spec.source.repoURL}' 2>/dev/null || true)
+  [[ $url == *ryanande/home-assistant* ]] || return 0
+  info "Removing the old 'root' Application (replaced by rv-home-assistant-root); children keep running"
+  kubectl -n argocd delete application root --cascade=orphan
 }
 
 deploy_apps() {
   if [[ $GITOPS_REVISION == main ]]; then
     log "Deploying apps from git (Argo CD root app)"
     kubectl apply -f "$REPO_DIR/gitops/argocd/root-app.yaml"
+    retire_old_root
   else
     # The root app would re-sync the children back to main, so apply them
     # directly with targetRevision pointed at the branch under test.
